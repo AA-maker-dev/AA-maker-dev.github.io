@@ -19,11 +19,112 @@ if (hamburger) {
     });
 }
 
+// Profile data sync
+const PROFILE_STORAGE_KEY = 'nexora_profile_v1';
+const DEFAULT_AVATAR_URL = 'https://media.istockphoto.com/id/1485546774/photo/bald-man-smiling-at-camera-standing-with-arms-crossed.jpg?s=612x612&w=0&k=20&c=9vuq6HxeSZfhZ7Jit_2HPVLyoajffb7h_SbWssh_bME=';
+
+function loadProfile() {
+    try {
+        const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function updateHomeProfile() {
+    const profile = loadProfile();
+    if (profile) {
+        const nameEl = document.getElementById('homeProfileName');
+        const usernameEl = document.getElementById('homeProfileUsername');
+        const followersEl = document.getElementById('homeFollowersCount');
+        const followingEl = document.getElementById('homeFollowingCount');
+        const postsEl = document.getElementById('homePostsCount');
+        const postInput = document.getElementById('postInput');
+        
+        // Update posts count from actual posts
+        const posts = loadPostsForHome();
+        const postsCount = posts.length;
+        
+        if (nameEl) nameEl.textContent = profile.name || 'Tester';
+        if (usernameEl) usernameEl.textContent = profile.username || '@admin';
+        if (followersEl) followersEl.textContent = profile.followers || '2.5K';
+        if (followingEl) followingEl.textContent = profile.following || '842';
+        if (postsEl) postsEl.textContent = postsCount;
+        if (postInput) {
+            postInput.placeholder = `What's on your mind, ${profile.name || 'Tester'}? Share your thoughts...`;
+        }
+        
+        // Update avatars with profile picture
+        const profilePicture = profile.profilePicture || DEFAULT_AVATAR_URL;
+        
+        // Update sidebar avatar
+        const sidebarAvatar = document.querySelector('.sidebar-card .user-profile .avatar');
+        if (sidebarAvatar) {
+            sidebarAvatar.src = profilePicture;
+        }
+        
+        // Update post creator avatar
+        const postCreatorAvatar = document.querySelector('.post-creator .avatar-sm');
+        if (postCreatorAvatar) {
+            postCreatorAvatar.src = profilePicture;
+        }
+    } else {
+        // If no profile, use default avatars
+        const profilePicture = DEFAULT_AVATAR_URL;
+        const sidebarAvatar = document.querySelector('.sidebar-card .user-profile .avatar');
+        if (sidebarAvatar) {
+            sidebarAvatar.src = profilePicture;
+        }
+        const postCreatorAvatar = document.querySelector('.post-creator .avatar-sm');
+        if (postCreatorAvatar) {
+            postCreatorAvatar.src = profilePicture;
+        }
+    }
+}
+
+// Helper function to load posts (accessible globally)
+function loadPostsForHome() {
+    try {
+        const raw = localStorage.getItem('nexora_posts_v1');
+        return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+// Listen for storage changes (when profile is updated from another tab/page)
+window.addEventListener('storage', (e) => {
+    if (e.key === PROFILE_STORAGE_KEY) {
+        updateHomeProfile();
+    }
+});
+
+// Also listen for custom event (when profile is updated in same tab)
+window.addEventListener('profileUpdated', () => {
+    updateHomeProfile();
+});
+
+// Update profile when page becomes visible (user returns from profile page)
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        updateHomeProfile();
+    }
+});
+
+// Update profile on page focus (when user switches back to this tab)
+window.addEventListener('focus', () => {
+    updateHomeProfile();
+});
+
 // Post creation with image upload, persistence, edit/delete, and actions
 const STORAGE_KEY = 'nexora_posts_v1';
 
 document.addEventListener('DOMContentLoaded', () => {
-    const imageInput = document.getElementById('image-input');
+    // Load and update profile data on page load
+    updateHomeProfile();
+    
+    const imageInput = document.getElementById('post-image');
     const thumbsContainer = document.getElementById('image-thumbs');
     const postBtn = document.getElementById('post-btn');
     const captionInput = document.getElementById('post-caption') || document.querySelector('.post-input');
@@ -31,6 +132,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearPostsBtn = document.getElementById('clear-posts');
 
     let selectedImages = []; // Data URLs
+
+    // Close all post menus when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.post-menu-container')) {
+            document.querySelectorAll('.post-menu-dropdown').forEach(dropdown => {
+                dropdown.style.display = 'none';
+            });
+        }
+    });
 
     // Load and render stored posts
     const posts = loadPostsFromStorage();
@@ -67,6 +177,13 @@ document.addEventListener('DOMContentLoaded', () => {
         posts.unshift(post);
         savePostsToStorage(posts);
         renderPost(post, postsContainer, posts);
+        
+        // Dispatch event to update profile page if it's open
+        console.log('Dispatching postsUpdated event');
+        window.dispatchEvent(new Event('postsUpdated'));
+        
+        // Also update posts count on home page
+        updateHomeProfile();
 
         // reset
         selectedImages = [];
@@ -120,7 +237,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Storage helpers
+    // Storage helpers (inside DOMContentLoaded scope)
     function loadPostsFromStorage() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
@@ -132,12 +249,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function savePostsToStorage(postsArr) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(postsArr));
+        // Dispatch event to update profile page if it's open
+        window.dispatchEvent(new Event('postsUpdated'));
     }
 
     // Rendering
     function renderAllPosts(postsArr) {
         postsContainer.innerHTML = '';
-        postsArr.forEach(post => renderPost(post, postsContainer, postsArr));
+        // Sort posts by time (newest first)
+        const sortedPosts = [...postsArr].sort((a, b) => {
+            const timeA = new Date(a.time || 0).getTime();
+            const timeB = new Date(b.time || 0).getTime();
+            return timeB - timeA; // Descending order (newest first)
+        });
+        sortedPosts.forEach(post => renderPost(post, postsContainer, postsArr));
     }
 
     function renderPost(post, container, postsArr) {
@@ -145,17 +270,30 @@ document.addEventListener('DOMContentLoaded', () => {
         postEl.className = 'post';
         postEl.dataset.id = post.id;
 
+        // Get profile picture for avatar
+        const profile = loadProfile();
+        const profilePicture = (profile && profile.profilePicture) ? profile.profilePicture : DEFAULT_AVATAR_URL;
+
         const header = document.createElement('div');
         header.className = 'post-header';
         header.innerHTML = `
-            <img src="../Images/avatar1.jpg" alt="User Avatar" class="avatar-sm">
+            <img src="${profilePicture}" alt="User Avatar" class="avatar-sm">
             <div class="post-info">
                 <h4>You</h4>
                 <span class="post-time">${timeAgoShort(post.time)}</span>
             </div>
-            <div style="margin-left:8px;display:flex;gap:8px;align-items:center">
-                <button class="btn-more btn-small post-edit">Edit</button>
-                <button class="btn-more btn-small post-delete">Delete</button>
+            <div class="post-menu-container" style="position: relative;">
+                <button class="post-menu-btn" title="More options">
+                    <i class="fas fa-ellipsis-v"></i>
+                </button>
+                <div class="post-menu-dropdown" style="display: none;">
+                    <button class="post-menu-item post-edit">
+                        <i class="fas fa-edit"></i> Edit
+                    </button>
+                    <button class="post-menu-item post-delete">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                </div>
             </div>
         `;
 
@@ -174,14 +312,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const stats = document.createElement('div');
         stats.className = 'post-stats';
-        stats.innerHTML = `<span class="likes"><i class="fas fa-heart"></i> ${post.likes} likes</span><span class="shares"><i class="fas fa-share"></i> ${post.shares} shares</span>`;
+        stats.innerHTML = `<span class="likes"><i class="fas fa-thumbs-up"></i> ${post.likes} likes</span><span class="shares"><i class="fas fa-paper-plane"></i> ${post.shares} shares</span>`;
 
         const actions = document.createElement('div');
         actions.className = 'post-actions';
         actions.innerHTML = `
-            <button class="action-like action-btn">${post.likes ? '<i class="fas fa-heart"></i> Unlike' : '<i class="far fa-heart"></i> Like'}</button>
+            <button class="action-like action-btn">${post.likes ? '<i class="fas fa-thumbs-up"></i> Unlike' : '<i class="far fa-thumbs-up"></i> Like'}</button>
             <button class="action-bookmark action-btn">${post.bookmarked ? '<i class="fas fa-bookmark"></i> Bookmarked' : '<i class="far fa-bookmark"></i> Bookmark'}</button>
-            <button class="action-share action-btn"><i class="far fa-share"></i> Share</button>
+            <button class="action-share action-btn"><i class="far fa-paper-plane"></i> Share</button>
         `;
 
         postEl.appendChild(header);
@@ -197,6 +335,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const shareBtn = postEl.querySelector('.action-share');
         const deleteBtn = postEl.querySelector('.post-delete');
         const editBtn = postEl.querySelector('.post-edit');
+        const menuBtn = postEl.querySelector('.post-menu-btn');
+        const menuDropdown = postEl.querySelector('.post-menu-dropdown');
+        const menuContainer = postEl.querySelector('.post-menu-container');
+        
+        // Toggle menu dropdown
+        menuBtn && menuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Close all other menus first
+            document.querySelectorAll('.post-menu-dropdown').forEach(dropdown => {
+                if (dropdown !== menuDropdown) {
+                    dropdown.style.display = 'none';
+                }
+            });
+            // Toggle current menu
+            menuDropdown.style.display = menuDropdown.style.display === 'none' ? 'block' : 'none';
+        });
 
         likeBtn && likeBtn.addEventListener('click', () => {
             post.likes = (post.likes || 0) + (post._liked ? -1 : 1);
@@ -216,6 +370,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         deleteBtn && deleteBtn.addEventListener('click', () => {
+            menuDropdown.style.display = 'none';
             if (!confirm('Delete this post?')) return;
             const i = postsArr.findIndex(p => p.id === post.id);
             if (i > -1) {
@@ -226,6 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         editBtn && editBtn.addEventListener('click', () => {
+            menuDropdown.style.display = 'none';
             if (content.classList.contains('editing')) return;
             content.classList.add('editing');
             const captionEl = content.querySelector('.post-caption');
@@ -266,8 +422,8 @@ document.addEventListener('DOMContentLoaded', () => {
             savePostsToStorage(postsArr);
             // update UI pieces
             const updatedLikes = postEl.querySelector('.post-stats .likes') || postEl.querySelector('.likes');
-            if (updatedLikes) updatedLikes.innerHTML = `<i class="fas fa-heart"></i> ${post.likes} likes`;
-            if (likeBtn) likeBtn.innerHTML = post._liked ? '<i class="fas fa-heart"></i> Unlike' : '<i class="far fa-heart"></i> Like';
+            if (updatedLikes) updatedLikes.innerHTML = `<i class="fas fa-thumbs-up"></i> ${post.likes} likes`;
+            if (likeBtn) likeBtn.innerHTML = post._liked ? '<i class="fas fa-thumbs-up"></i> Unlike' : '<i class="far fa-thumbs-up"></i> Like';
             if (bookmarkBtn) bookmarkBtn.innerHTML = post.bookmarked ? '<i class="fas fa-bookmark"></i> Bookmarked' : '<i class="far fa-bookmark"></i> Bookmark';
             // caption refresh
             const cap = postEl.querySelector('.post-caption');
