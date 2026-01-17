@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"d:\\\\Social Media\\\\AA-maker-dev\\.github\\.io\"; Rename-Item -Path \"CSS\" -NewName \"css\"; Rename-Item -Path \"JS\" -NewName \"js\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
