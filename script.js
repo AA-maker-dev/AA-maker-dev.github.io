@@ -222,6 +222,170 @@ document.querySelectorAll('.stat-number').forEach(stat => {
 });
 
 // ==========================================
+// Emergency Map (Leaflet) + AI-ish mapping
+// ==========================================
+
+let emergencyMap;
+let emergencyBounds;
+let incidentMarkers = [];
+const liveIncidentCountEl = document.getElementById('liveIncidentCount');
+const formStatusEl = document.getElementById('formStatus');
+
+const GEO_API_ENDPOINT = 'http://localhost:8000/geocode'; // FastAPI geocoder endpoint (see docs)
+
+// Simple client-side fallback that queries public Nominatim when backend is unavailable
+async function clientGeocodeFallback(locationText) {
+    try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(locationText)}`;
+        const res = await fetch(url, {
+            headers: {
+                'Accept-Language': 'en'
+            }
+        });
+        if (!res.ok) throw new Error('Client geocode failed');
+        const results = await res.json();
+        if (Array.isArray(results) && results[0]?.lat && results[0]?.lon) {
+            return {
+                coords: [parseFloat(results[0].lat), parseFloat(results[0].lon)],
+                resolvedName: results[0].display_name
+            };
+        }
+    } catch (err) {
+        console.warn('Public Nominatim fallback failed:', err?.message || err);
+    }
+    return null;
+}
+
+// Seed data to pre-populate the map
+const baseIncidents = [
+    { title: 'Wildfire | Los Angeles, United States', coords: [34.0522, -118.2437], level: 'critical', status: 'Active response' },
+    { title: 'Flooding | Manila, Philippines', coords: [14.5995, 120.9842], level: 'high', status: 'Evacuation underway' },
+    { title: 'Landslide Risk | Medellin, Colombia', coords: [6.2476, -75.5658], level: 'medium', status: 'Monitoring' },
+    { title: 'Road Blockage | Warsaw, Poland', coords: [52.2297, 21.0122], level: 'low', status: 'Clearing crew en route' },
+    { title: 'Earthquake Aftershock | Tokyo, Japan', coords: [35.6762, 139.6503], level: 'critical', status: 'Search and rescue' }
+];
+
+function mapUrgencyToLevel(urgency) {
+    const map = { critical: 'critical', high: 'high', medium: 'medium', low: 'low' };
+    return map[urgency] || 'medium';
+}
+
+async function geocodeLocation(locationText) {
+    if (!locationText) return null;
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        const res = await fetch(GEO_API_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: locationText }),
+            signal: controller.signal
+        });
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error('Geocode failed');
+        const data = await res.json();
+        if (data?.lat && data?.lng) {
+            return {
+                coords: [data.lat, data.lng],
+                resolvedName: data.formatted || locationText
+            };
+        }
+    } catch (err) {
+        console.warn('Geocode fallback:', err?.message || err);
+    }
+    // Try client-side public Nominatim before resorting to pseudo coords
+    const nominatimGeo = await clientGeocodeFallback(locationText);
+    if (nominatimGeo) return nominatimGeo;
+    return null;
+}
+
+function pseudoGeocode(locationText) {
+    // Deterministic pseudo-geocoder: hashes the location string to lat/lng
+    let hash = 0;
+    for (let i = 0; i < locationText.length; i++) {
+        hash = ((hash << 5) - hash) + locationText.charCodeAt(i);
+        hash |= 0;
+    }
+    const lat = ((hash % 14000) / 100) - 70; // -70 to +70
+    const lng = (((hash / 14000) % 34000) / 100) - 170; // -170 to +170
+    return [lat, lng];
+}
+
+function addIncidentMarker(incident) {
+    if (!emergencyMap) return;
+
+    const marker = L.marker(incident.coords, {
+        icon: L.divIcon({
+            className: 'emergency-marker',
+            html: `<div class="marker-dot marker-${incident.level}"></div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
+        })
+    }).addTo(emergencyMap);
+
+    marker.bindPopup(`
+        <strong>${incident.title}</strong><br>
+        Urgency: ${incident.level.toUpperCase()}<br>
+        Status: ${incident.status}
+    `);
+
+    incidentMarkers.push(marker);
+    emergencyBounds.extend(incident.coords);
+    updateLiveIncidentCount();
+}
+
+function initEmergencyMap() {
+    const mapElement = document.getElementById('liveMap');
+    if (!mapElement || typeof L === 'undefined') return;
+
+    emergencyMap = L.map(mapElement, {
+        worldCopyJump: true,
+        zoomControl: true
+    });
+
+    const defaultView = [20, 0];
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors, &copy; CARTO'
+    }).addTo(emergencyMap);
+
+    emergencyBounds = L.latLngBounds();
+
+    baseIncidents.forEach(addIncidentMarker);
+
+    if (emergencyBounds.isValid()) {
+        emergencyMap.fitBounds(emergencyBounds, { padding: [32, 32] });
+    } else {
+        emergencyMap.setView(defaultView, 2);
+    }
+}
+
+function updateLiveIncidentCount() {
+    if (!liveIncidentCountEl) return;
+    const total = incidentMarkers.length;
+    liveIncidentCountEl.textContent = `Live incidents: ${total}`;
+}
+
+async function addUserIncidentToMap(formData, priorityScore) {
+    if (!emergencyMap) return;
+    const geo = await geocodeLocation(formData.location.trim());
+    const coords = geo?.coords || pseudoGeocode(formData.location.trim());
+    const level = mapUrgencyToLevel(formData.urgency);
+    const title = `${formData.disasterType || 'Incident'} | ${geo?.resolvedName || formData.location}`;
+    const status = `Priority ${priorityScore} • ${formData.message.slice(0, 80)}`;
+
+    const incident = { title, coords, level, status };
+    addIncidentMarker(incident);
+
+    if (emergencyBounds.isValid()) {
+        emergencyMap.fitBounds(emergencyBounds, { padding: [32, 32] });
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initEmergencyMap);
+
+// ==========================================
 // Footer Functionality - Modals
 // ==========================================
 
@@ -416,7 +580,26 @@ if (linkedinLink) {
 const emergencyForm = document.getElementById('emergencyForm');
 const priorityCard = document.getElementById('priorityCard');
 
-emergencyForm.addEventListener('submit', (e) => {
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function setFormStatus(state, text) {
+    if (!formStatusEl) return;
+    formStatusEl.classList.remove('pending', 'error');
+    if (state === 'pending') formStatusEl.classList.add('pending');
+    if (state === 'error') formStatusEl.classList.add('error');
+    const dot = formStatusEl.querySelector('.status-dot');
+    if (dot && state === 'pending') {
+        dot.classList.add('spin');
+    } else if (dot) {
+        dot.classList.remove('spin');
+    }
+    const label = formStatusEl.querySelector('.status-text');
+    if (label) label.textContent = text;
+}
+
+emergencyForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     
     // Get form values
@@ -431,6 +614,7 @@ emergencyForm.addEventListener('submit', (e) => {
     // Validate required fields
     if (!formData.location || !formData.disasterType || !formData.urgency || !formData.message) {
         showNotification('Please fill in all required fields', 'error');
+        setFormStatus('error', 'Missing required fields');
         return;
     }
     
@@ -439,27 +623,32 @@ emergencyForm.addEventListener('submit', (e) => {
     const originalText = submitBtn.innerHTML;
     submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
     submitBtn.disabled = true;
+    setFormStatus('pending', 'Geocoding & prioritizing...');
     
     // Simulate AI processing
+    await delay(1200);
+
+    // Calculate priority score based on urgency and disaster type
+    const priorityScore = calculatePriorityScore(formData);
+    
+    // Display priority card
+    displayPriorityCard(formData, priorityScore);
+
+    // Drop marker on map using backend geocode if available
+    await addUserIncidentToMap(formData, priorityScore);
+    
+    // Reset button
+    submitBtn.innerHTML = originalText;
+    submitBtn.disabled = false;
+    setFormStatus('ready', 'Mapped successfully');
+    
+    // Show success notification
+    showNotification('Emergency request submitted successfully!', 'success');
+    
+    // Scroll to priority card to show the AI analysis
     setTimeout(() => {
-        // Calculate priority score based on urgency and disaster type
-        const priorityScore = calculatePriorityScore(formData);
-        
-        // Display priority card
-        displayPriorityCard(formData, priorityScore);
-        
-        // Reset button
-        submitBtn.innerHTML = originalText;
-        submitBtn.disabled = false;
-        
-        // Show success notification
-        showNotification('Emergency request submitted successfully!', 'success');
-        
-        // Scroll to priority card
-        setTimeout(() => {
-            priorityCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 100);
-    }, 1500);
+        priorityCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
 });
 
 // ==========================================
@@ -558,7 +747,15 @@ function generateStatusMessage(data, score) {
 
 function viewOnMap() {
     scrollToSection('map');
-    showNotification('Location marked on emergency map', 'info');
+    setTimeout(() => {
+        if (emergencyMap) {
+            emergencyMap.invalidateSize();
+            if (emergencyBounds?.isValid()) {
+                emergencyMap.fitBounds(emergencyBounds, { padding: [32, 32] });
+            }
+        }
+    }, 350);
+    showNotification('Emergency map centered on active incidents', 'info');
 }
 
 function resetForm() {
